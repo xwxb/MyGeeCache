@@ -23,8 +23,8 @@ func New(maxBytes int64, onEvicted func(string, Value)) *Cache {
 }
 
 type entry struct {
-	key   string
-	value Value // 缓存的值可以是已经实现接口的任意类型
+	key   string // 这个其实就是看似多余的，目的是为了在淘汰的时候回来删哈希表
+	value Value  // 缓存的值可以是已经实现接口的任意类型
 }
 
 // Value use Len to count how many bytes it takes
@@ -71,7 +71,8 @@ func (c *Cache) Add(key string, value Value) {
 		c.cache[key] = ele
 		c.nbytes += int64(len(key)) + int64(value.Len())
 	}
-	for c.maxBytes != 0 && c.maxBytes < c.nbytes { // 不是按 entry 数量触发，而是按空间
+	for c.maxBytes != 0 && c.maxBytes < c.nbytes { // 不是按 entry 数量触发，而是按空间；但是这里似乎确定是不合理的
+		// 一是先溢出再淘汰，二是只移出去一个可能还是溢出
 		c.RemoveOldest()
 	}
 }
