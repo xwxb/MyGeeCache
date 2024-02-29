@@ -31,7 +31,7 @@ func New(replicas int, fn Hash) *Map {
 }
 
 // Add adds some keys to the hash.
-// 输入是实际查找 key，然后吧 key hash 并添加成虚拟节点
+// 输入是实际是节点地址，然后吧 key hash 并添加成虚拟节点
 func (m *Map) Add(keys ...string) {
 	for _, key := range keys {
 		for i := 0; i < m.replicas; i++ { // 这里来确实就是添加了几份虚拟节点，然后保存映射关系

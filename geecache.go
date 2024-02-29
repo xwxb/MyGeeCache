@@ -25,6 +25,7 @@ type Group struct {
 	name      string
 	getter    Getter
 	mainCache cache
+	peers     PeerPicker
 }
 
 var (
@@ -75,8 +76,18 @@ func (g *Group) Get(key string) (ByteView, error) {
 }
 
 // load
-// 某种程度上是一个实现隐藏
+// 某种程度上是一个实现隐藏；这个函数的实现是一个分布式的扩展点
+// 这个函数其实很关键了。框架本身肯定需要实现一个简易网关，在不知道哪个节点取的话，可能网关本地就有缓存，没有的话再 http 从 peer 获取
 func (g *Group) load(key string) (value ByteView, err error) {
+	if g.peers != nil { // 实现上应该是先考虑远程 ？这样合适吗
+		if peer, ok := g.peers.PickPeer(key); ok {
+			if value, err = g.getFromPeer(peer, key); err == nil {
+				return value, nil
+			}
+			log.Println("[GeeCache] Failed to get from peer", err)
+		}
+	}
+
 	return g.getLocally(key)
 }
 
@@ -93,4 +104,20 @@ func (g *Group) getLocally(key string) (ByteView, error) {
 
 func (g *Group) populateCache(key string, value ByteView) {
 	g.mainCache.add(key, value)
+}
+
+// RegisterPeers registers a PeerPicker for choosing remote peer
+func (g *Group) RegisterPeers(peers PeerPicker) {
+	if g.peers != nil {
+		panic("RegisterPeerPicker called more than once")
+	}
+	g.peers = peers
+}
+
+func (g *Group) getFromPeer(peer PeerGetter, key string) (ByteView, error) {
+	bytes, err := peer.Get(g.name, key)
+	if err != nil {
+		return ByteView{}, err
+	}
+	return ByteView{b: bytes}, nil
 }

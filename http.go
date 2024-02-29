@@ -2,18 +2,28 @@ package geecache
 
 import (
 	"fmt"
+	consistenthash "github.com/xwxb/MyGeeCache/consistanthash"
+	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 )
 
-const defaultBasePath = "/_geecache/"
+const (
+	defaultBasePath = "/_geecache/"
+	defaultReplicas = 50
+)
 
 // HTTPPool implements PeerPicker for a pool of HTTP peers.
 type HTTPPool struct {
 	// this peer's base URL, e.g. "https://example.net:8000"
-	self     string
-	basePath string
+	self        string
+	basePath    string
+	mu          sync.Mutex // guards peers and httpGetters
+	peers       *consistenthash.Map
+	httpGetters map[string]*httpGetter // keyed by e.g. "http://10.0.0.2:8008"
 }
 
 // NewHTTPPool initializes an HTTP pool of peers.
@@ -61,3 +71,62 @@ func (p *HTTPPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Write(view.ByteSlice())
 
 }
+
+// Set updates the pool's list of peers.
+// 这个是注册的时候，和上层的 Group 一起调用的，是在运行注册时候就确定了的，并不是动态添加
+func (p *HTTPPool) Set(peers ...string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.peers = consistenthash.New(defaultReplicas, nil)
+	p.peers.Add(peers...) //
+	p.httpGetters = make(map[string]*httpGetter, len(peers))
+	for _, peer := range peers {
+		p.httpGetters[peer] = &httpGetter{baseURL: peer + p.basePath}
+	}
+}
+
+// PickPeer picks a peer according to key
+func (p *HTTPPool) PickPeer(key string) (PeerGetter, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if peer := p.peers.Get(key); peer != "" && peer != p.self {
+		p.Log("Pick peer %s", peer)
+		return p.httpGetters[peer], true
+	}
+	return nil, false
+}
+
+// 想起来这种写法了，就是为了方便导航到接口实现
+var _ PeerPicker = (*HTTPPool)(nil)
+
+type httpGetter struct {
+	baseURL string
+}
+
+// Get 每个 pool 里的 peer，作为客户端的核心实现，从别的 peer 里获取，一个简单的 http get 请求封装
+func (h *httpGetter) Get(group string, key string) ([]byte, error) {
+	u := fmt.Sprintf(
+		"%v%v/%v",
+		h.baseURL,
+		url.QueryEscape(group),
+		url.QueryEscape(key),
+	)
+	res, err := http.Get(u)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("server returned: %v", res.Status)
+	}
+
+	bytes, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response body: %v", err)
+	}
+
+	return bytes, nil
+}
+
+var _ PeerGetter = (*httpGetter)(nil)
