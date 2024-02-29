@@ -2,6 +2,7 @@ package geecache
 
 import (
 	"fmt"
+	"github.com/xwxb/MyGeeCache/singleflight"
 	"log"
 	"sync"
 )
@@ -26,6 +27,9 @@ type Group struct {
 	getter    Getter
 	mainCache cache
 	peers     PeerPicker
+	// use singleflight.Group to make sure that
+	// each key is only fetched once
+	loader *singleflight.Group // 可以暂时叫做是 loader 设计
 }
 
 var (
@@ -79,16 +83,25 @@ func (g *Group) Get(key string) (ByteView, error) {
 // 某种程度上是一个实现隐藏；这个函数的实现是一个分布式的扩展点
 // 这个函数其实很关键了。框架本身肯定需要实现一个简易网关，在不知道哪个节点取的话，可能网关本地就有缓存，没有的话再 http 从 peer 获取
 func (g *Group) load(key string) (value ByteView, err error) {
-	if g.peers != nil { // 实现上应该是先考虑远程 ？这样合适吗
-		if peer, ok := g.peers.PickPeer(key); ok {
-			if value, err = g.getFromPeer(peer, key); err == nil {
-				return value, nil
+	// each key is only fetched once (either locally or remotely)
+	// regardless of the number of concurrent callers.
+	viewi, err := g.loader.Do(key, func() (interface{}, error) {
+		if g.peers != nil { // 实现上应该是先考虑远程 ？这样合适吗
+			if peer, ok := g.peers.PickPeer(key); ok {
+				if value, err = g.getFromPeer(peer, key); err == nil {
+					return value, nil
+				}
+				log.Println("[GeeCache] Failed to get from peer", err)
 			}
-			log.Println("[GeeCache] Failed to get from peer", err)
 		}
-	}
 
-	return g.getLocally(key)
+		return g.getLocally(key) // 本地并发调用的情况也一并封了
+	})
+
+	if err == nil {
+		return viewi.(ByteView), nil
+	}
+	return
 }
 
 // getLocally 大概是留了一个分布式的扩展点吧
